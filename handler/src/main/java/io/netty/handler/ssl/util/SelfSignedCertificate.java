@@ -156,7 +156,8 @@ public final class SelfSignedCertificate {
                 logger.debug("Failed to generate a self-signed X.509 certificate using Bouncy Castle:", t2);
                 throw new CertificateException(
                         "No provider succeeded to generate a self-signed certificate. " +
-                                "See debug log for the root cause.");
+                                "See debug log for the root cause.", t2);
+                // TODO: consider using Java 7 addSuppressed to append t
             }
         }
 
@@ -174,7 +175,9 @@ public final class SelfSignedCertificate {
                 try {
                     certificateInput.close();
                 } catch (IOException e) {
-                    logger.warn("Failed to close a file: " + certificate, e);
+                    if (logger.isWarnEnabled()) {
+                        logger.warn("Failed to close a file: " + certificate, e);
+                    }
                 }
             }
         }
@@ -287,7 +290,9 @@ public final class SelfSignedCertificate {
 
     private static void safeDelete(File certFile) {
         if (!certFile.delete()) {
-            logger.warn("Failed to delete a file: " + certFile);
+            if (logger.isWarnEnabled()) {
+                logger.warn("Failed to delete a file: " + certFile);
+            }
         }
     }
 
@@ -295,7 +300,9 @@ public final class SelfSignedCertificate {
         try {
             keyOut.close();
         } catch (IOException e) {
-            logger.warn("Failed to close a file: " + keyFile, e);
+            if (logger.isWarnEnabled()) {
+                logger.warn("Failed to close a file: " + keyFile, e);
+            }
         }
     }
 }

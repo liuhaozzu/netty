@@ -16,6 +16,9 @@
 
 package io.netty.buffer;
 
+import static io.netty.util.internal.ObjectUtil.checkPositiveOrZero;
+
+import io.netty.util.NettyRuntime;
 import io.netty.util.concurrent.FastThreadLocal;
 import io.netty.util.concurrent.FastThreadLocalThread;
 import io.netty.util.internal.PlatformDependent;
@@ -44,6 +47,7 @@ public class PooledByteBufAllocator extends AbstractByteBufAllocator implements 
     private static final int DEFAULT_CACHE_TRIM_INTERVAL;
     private static final boolean DEFAULT_USE_CACHE_FOR_ALL_THREADS;
     private static final int DEFAULT_DIRECT_MEMORY_CACHE_ALIGNMENT;
+    static final int DEFAULT_MAX_CACHED_BYTEBUFFERS_PER_CHUNK;
 
     private static final int MIN_PAGE_SIZE = 4096;
     private static final int MAX_CHUNK_SIZE = (int) (((long) Integer.MAX_VALUE + 1) / 2);
@@ -73,11 +77,14 @@ public class PooledByteBufAllocator extends AbstractByteBufAllocator implements 
         // Assuming each arena has 3 chunks, the pool should not consume more than 50% of max memory.
         final Runtime runtime = Runtime.getRuntime();
 
-        // Use 2 * cores by default to reduce condition as we use 2 * cores for the number of EventLoops
-        // in NIO and EPOLL as well. If we choose a smaller number we will run into hotspots as allocation and
-        // deallocation needs to be synchronized on the PoolArena.
-        // See https://github.com/netty/netty/issues/3888
-        final int defaultMinNumArena = runtime.availableProcessors() * 2;
+        /*
+         * We use 2 * available processors by default to reduce contention as we use 2 * available processors for the
+         * number of EventLoops in NIO and EPOLL as well. If we choose a smaller number we will run into hot spots as
+         * allocation and de-allocation needs to be synchronized on the PoolArena.
+         *
+         * See https://github.com/netty/netty/issues/3888.
+         */
+        final int defaultMinNumArena = NettyRuntime.availableProcessors() * 2;
         final int defaultChunkSize = DEFAULT_PAGE_SIZE << DEFAULT_MAX_ORDER;
         DEFAULT_NUM_HEAP_ARENA = Math.max(0,
                 SystemPropertyUtil.getInt(
@@ -112,6 +119,11 @@ public class PooledByteBufAllocator extends AbstractByteBufAllocator implements 
         DEFAULT_DIRECT_MEMORY_CACHE_ALIGNMENT = SystemPropertyUtil.getInt(
                 "io.netty.allocator.directMemoryCacheAlignment", 0);
 
+        // Use 1023 by default as we use an ArrayDeque as backing storage which will then allocate an internal array
+        // of 1024 elements. Otherwise we would allocate 2048 and only use 1024 which is wasteful.
+        DEFAULT_MAX_CACHED_BYTEBUFFERS_PER_CHUNK = SystemPropertyUtil.getInt(
+                "io.netty.allocator.maxCachedByteBuffersPerChunk", 1023);
+
         if (logger.isDebugEnabled()) {
             logger.debug("-Dio.netty.allocator.numHeapArenas: {}", DEFAULT_NUM_HEAP_ARENA);
             logger.debug("-Dio.netty.allocator.numDirectArenas: {}", DEFAULT_NUM_DIRECT_ARENA);
@@ -132,6 +144,8 @@ public class PooledByteBufAllocator extends AbstractByteBufAllocator implements 
             logger.debug("-Dio.netty.allocator.maxCachedBufferCapacity: {}", DEFAULT_MAX_CACHED_BUFFER_CAPACITY);
             logger.debug("-Dio.netty.allocator.cacheTrimInterval: {}", DEFAULT_CACHE_TRIM_INTERVAL);
             logger.debug("-Dio.netty.allocator.useCacheForAllThreads: {}", DEFAULT_USE_CACHE_FOR_ALL_THREADS);
+            logger.debug("-Dio.netty.allocator.maxCachedByteBuffersPerChunk: {}",
+                    DEFAULT_MAX_CACHED_BYTEBUFFERS_PER_CHUNK);
         }
     }
 
@@ -203,17 +217,10 @@ public class PooledByteBufAllocator extends AbstractByteBufAllocator implements 
         this.normalCacheSize = normalCacheSize;
         chunkSize = validateAndCalculateChunkSize(pageSize, maxOrder);
 
-        if (nHeapArena < 0) {
-            throw new IllegalArgumentException("nHeapArena: " + nHeapArena + " (expected: >= 0)");
-        }
-        if (nDirectArena < 0) {
-            throw new IllegalArgumentException("nDirectArea: " + nDirectArena + " (expected: >= 0)");
-        }
+        checkPositiveOrZero(nHeapArena, "nHeapArena");
+        checkPositiveOrZero(nDirectArena, "nDirectArena");
 
-        if (directMemoryCacheAlignment < 0) {
-            throw new IllegalArgumentException("directMemoryCacheAlignment: "
-                    + directMemoryCacheAlignment + " (expected: >= 0)");
-        }
+        checkPositiveOrZero(directMemoryCacheAlignment, "directMemoryCacheAlignment");
         if (directMemoryCacheAlignment > 0 && !isDirectMemoryCacheAlignmentSupported()) {
             throw new IllegalArgumentException("directMemoryCacheAlignment is not supported");
         }
@@ -356,6 +363,20 @@ public class PooledByteBufAllocator extends AbstractByteBufAllocator implements 
     }
 
     /**
+     * Default thread caching behavior - System Property: io.netty.allocator.useCacheForAllThreads - default true
+     */
+    public static boolean defaultUseCacheForAllThreads() {
+        return DEFAULT_USE_CACHE_FOR_ALL_THREADS;
+    }
+
+    /**
+     * Default prefer direct - System Property: io.netty.noPreferDirect - default false
+     */
+    public static boolean defaultPreferDirect() {
+        return PlatformDependent.directBufferPreferred();
+    }
+
+    /**
      * Default tiny cache size - System Property: io.netty.allocator.tinyCacheSize - default 512
      */
     public static int defaultTinyCacheSize() {
@@ -417,12 +438,13 @@ public class PooledByteBufAllocator extends AbstractByteBufAllocator implements 
             final PoolArena<byte[]> heapArena = leastUsedArena(heapArenas);
             final PoolArena<ByteBuffer> directArena = leastUsedArena(directArenas);
 
-            if (useCacheForAllThreads || Thread.currentThread() instanceof FastThreadLocalThread) {
+            Thread current = Thread.currentThread();
+            if (useCacheForAllThreads || current instanceof FastThreadLocalThread) {
                 return new PoolThreadCache(
                         heapArena, directArena, tinyCacheSize, smallCacheSize, normalCacheSize,
                         DEFAULT_MAX_CACHED_BUFFER_CAPACITY, DEFAULT_CACHE_TRIM_INTERVAL);
             }
-            // No caching for non FastThreadLocalThreads.
+            // No caching so just use 0 as sizes.
             return new PoolThreadCache(heapArena, directArena, 0, 0, 0, 0, 0);
         }
 
@@ -561,7 +583,7 @@ public class PooledByteBufAllocator extends AbstractByteBufAllocator implements 
         return usedMemory(directArenas);
     }
 
-    private static long usedMemory(PoolArena<?>... arenas) {
+    private static long usedMemory(PoolArena<?>[] arenas) {
         if (arenas == null) {
             return -1;
         }
@@ -576,7 +598,9 @@ public class PooledByteBufAllocator extends AbstractByteBufAllocator implements 
     }
 
     final PoolThreadCache threadCache() {
-        return threadCache.get();
+        PoolThreadCache cache =  threadCache.get();
+        assert cache != null;
+        return cache;
     }
 
     /**

@@ -15,6 +15,8 @@
  */
 package io.netty.buffer;
 
+import static io.netty.util.internal.ObjectUtil.checkPositiveOrZero;
+
 import io.netty.util.internal.PlatformDependent;
 
 import java.io.IOException;
@@ -28,9 +30,9 @@ import java.nio.channels.GatheringByteChannel;
 import java.nio.channels.ScatteringByteChannel;
 
 /**
- * A NIO {@link ByteBuffer} based buffer.  It is recommended to use {@link Unpooled#directBuffer(int)}
- * and {@link Unpooled#wrappedBuffer(ByteBuffer)} instead of calling the
- * constructor explicitly.
+ * A NIO {@link ByteBuffer} based buffer. It is recommended to use
+ * {@link UnpooledByteBufAllocator#directBuffer(int, int)}, {@link Unpooled#directBuffer(int)} and
+ * {@link Unpooled#wrappedBuffer(ByteBuffer)} instead of calling the constructor explicitly.}
  */
 public class UnpooledUnsafeDirectByteBuf extends AbstractReferenceCountedByteBuf {
 
@@ -48,17 +50,13 @@ public class UnpooledUnsafeDirectByteBuf extends AbstractReferenceCountedByteBuf
      * @param initialCapacity the initial capacity of the underlying direct buffer
      * @param maxCapacity     the maximum capacity of the underlying direct buffer
      */
-    protected UnpooledUnsafeDirectByteBuf(ByteBufAllocator alloc, int initialCapacity, int maxCapacity) {
+    public UnpooledUnsafeDirectByteBuf(ByteBufAllocator alloc, int initialCapacity, int maxCapacity) {
         super(maxCapacity);
         if (alloc == null) {
             throw new NullPointerException("alloc");
         }
-        if (initialCapacity < 0) {
-            throw new IllegalArgumentException("initialCapacity: " + initialCapacity);
-        }
-        if (maxCapacity < 0) {
-            throw new IllegalArgumentException("maxCapacity: " + maxCapacity);
-        }
+        checkPositiveOrZero(initialCapacity, "initialCapacity");
+        checkPositiveOrZero(maxCapacity, "maxCapacity");
         if (initialCapacity > maxCapacity) {
             throw new IllegalArgumentException(String.format(
                     "initialCapacity(%d) > maxCapacity(%d)", initialCapacity, maxCapacity));
@@ -517,7 +515,8 @@ public class UnpooledUnsafeDirectByteBuf extends AbstractReferenceCountedByteBuf
 
     @Override
     public ByteBuf setZero(int index, int length) {
-        UnsafeByteBufUtil.setZero(this, addr(index), index, length);
+        checkIndex(index, length);
+        UnsafeByteBufUtil.setZero(addr(index), length);
         return this;
     }
 
@@ -525,7 +524,7 @@ public class UnpooledUnsafeDirectByteBuf extends AbstractReferenceCountedByteBuf
     public ByteBuf writeZero(int length) {
         ensureWritable(length);
         int wIndex = writerIndex;
-        setZero(wIndex, length);
+        UnsafeByteBufUtil.setZero(addr(wIndex), length);
         writerIndex = wIndex + length;
         return this;
     }
